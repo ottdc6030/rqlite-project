@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+           http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>edu.wisc.cs739</groupId>
+  <artifactId>rqlite-binding</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+  <name>rqlite YCSB Binding</name>
+
+  <properties>
+    <maven.compiler.source>11</maven.compiler.source>
+    <maven.compiler.target>11</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- Override on the command line if needed: mvn package -Dycsb.version=... -->
+    <ycsb.version>0.17.0</ycsb.version>
+    <jackson.version>2.17.2</jackson.version>
+  </properties>
+
+  <dependencies>
+    <!-- YCSB core — must be on the classpath when running, but NOT bundled in the fat JAR
+         (YCSB puts its own core JAR on the classpath at launch time). -->
+    <dependency>
+      <groupId>site.ycsb</groupId>
+      <artifactId>core</artifactId>
+      <version>${ycsb.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- JSON parsing for rqlite HTTP responses -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>${project.artifactId}</finalName>
+    <plugins>
+      <!-- Produce a fat (uber) JAR that bundles Jackson.
+           Exclude YCSB core (provided scope) so it is not double-loaded.
+           Drop the resulting JAR into YCSB's lib/ directory. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.5.3</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <!-- false = thin JAR is the primary installed artifact;
+                   the fat JAR gets the 'for-ycsb' classifier and is used
+                   only for dropping into YCSB's lib/ directory. -->
+              <shadedArtifactAttached>true</shadedArtifactAttached>
+              <shadedClassifierName>for-ycsb</shadedClassifierName>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <outputFile>${project.build.directory}/${project.build.finalName}-for-ycsb.jar</outputFile>
+              <filters>
+                <!-- Strip module-info and signature files that cause JAR verification issues -->
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                    <exclude>module-info.class</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+
+</project>
