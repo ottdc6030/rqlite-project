@@ -51,6 +51,72 @@ You can also build individual components:
 
 ---
 
+## Starting a local cluster
+
+`cluster.sh` launches one or more rqlite nodes as Podman containers on your local machine and wires them into a Raft cluster automatically. It requires Podman and the `ghcr.io/rqlite/rqlite:latest` image.
+
+### Basic usage
+
+```bash
+./cluster.sh                        # 3-node cluster (default)
+./cluster.sh 5                      # 5-node cluster
+./cluster.sh 3 5001                 # 3-node cluster, base port 5001
+./cluster.sh 3 4001 1.0.0           # 3-node cluster, override CNI version (default is 0.4.0, which is what the machines want)
+```
+
+Node *i* is mapped to host port `BASE_HTTP_PORT + i × 10`:
+
+| Nodes | Ports |
+|---|---|
+| 3 (default) | `:4001`, `:4011`, `:4021` |
+| 5 | `:4001`, `:4011`, `:4021`, `:4031`, `:4041` |
+
+### Other subcommands
+
+```bash
+./cluster.sh stop                   # remove all cluster containers + Podman network
+./cluster.sh status                 # show the state of each container
+./cluster.sh urls                   # print the --urls string for run_tests.py
+./cluster.sh urls 5 5001            # URLs for a hypothetical 5-node cluster at :5001
+```
+
+### CNI version override
+
+The third positional argument sets the CNI version written into the Podman network conflist (`~/.config/cni/net.d/rqlite-net.conflist`). The default is `0.4.0` and requires no special handling. Specifying any other version causes the script to:
+
+1. Run `podman system reset --force` (clears all containers, images cached in storage, and network state).
+2. Re-create the `rqlite-net` network.
+3. Patch `"cniVersion"` in the generated conflist before starting any nodes.
+
+```bash
+./cluster.sh 3 4001 0.4.0
+```
+
+> **Warning:** `podman system reset --force` is destructive — it removes all containers and resets Podman storage. Only use the CNI override when you specifically need to test a different CNI version.
+
+### After the cluster is up
+
+The script prints the `--urls` string to paste directly into `run_tests.py`:
+
+```
+Cluster is ready.  3 node(s) running.
+
+  --urls value for run_tests.py:
+    localhost:4001,localhost:4011,localhost:4021
+
+  Example commands:
+    python3 run_tests.py fuzz --urls localhost:4001,localhost:4011,localhost:4021 --threads 4 --num-ops 500 --replication-factor 3
+    python3 run_tests.py ycsb --urls localhost:4001,localhost:4011,localhost:4021 --workload a --threads 4 --replication-factor 3
+```
+
+You can also verify cluster membership directly:
+
+```bash
+curl -s http://localhost:4001/nodes?ver=2 | python3 -m json.tool
+```
+
+---
+
 ## Multi-cluster layout
 
 Both tools support running against multiple independent rqlite clusters in a single test. Clusters are defined by listing **all** node URLs together and specifying a **replication factor** that controls how the list is sliced.
@@ -180,6 +246,7 @@ The `--workload` flag accepts:
 ```
 final_project/
 ├── build.sh                          # One-shot build script
+├── cluster.sh                        # Start / stop a local Podman cluster
 ├── run_tests.py                      # Python test runner
 ├── rqlite-binding/                   # YCSB binding (Maven project)
 │   ├── pom.xml
