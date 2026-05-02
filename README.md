@@ -51,9 +51,11 @@ You can also build individual components:
 
 ---
 
-## Starting a local cluster
+## Starting a local cluster (single machine)
 
-`cluster.sh` launches one or more rqlite nodes as Podman containers on your local machine and wires them into a Raft cluster automatically. It requires Podman and the `ghcr.io/rqlite/rqlite:latest` image.
+`cluster.sh` launches one or more rqlite nodes as Podman containers **on your local machine** and wires them into a single Raft cluster automatically. All nodes run on the same host and communicate over a private Podman bridge network — no real network connectivity between machines is needed.
+
+> If you want to spread a single cluster across **multiple physical or virtual machines**, use [`node.sh`](#starting-a-multi-machine-cluster) instead.
 
 ### Basic usage
 
@@ -113,6 +115,81 @@ You can also verify cluster membership directly:
 
 ```bash
 curl -s http://localhost:4001/nodes?ver=2 | python3 -m json.tool
+```
+
+---
+
+## Starting a multi-machine cluster
+
+`node.sh` starts rqlite replicas on **this machine** as members of a single Raft cluster that is spread across multiple servers. Each machine runs the same script with its own flags; the nodes advertise their real host IP so every machine in the cluster can reach every other node directly.
+
+> Use `cluster.sh` when all nodes live on one machine.
+> Use `node.sh` when you want one shared cluster distributed across multiple machines.
+
+### How it works
+
+- **`--network host`** — containers bind directly to the machine's real IP and ports. No Podman bridge or port-mapping is used, so remote machines can reach each node at `MY_IP:PORT`.
+- **Port scheme per node *i*:** HTTP on `BASE_PORT + i×10`, Raft on `BASE_PORT + i×10 + 1` (default base: 4001).
+- **One machine must be the leader** (`--leader`). All others join it with `--leader-ip`.
+- On the leader machine, node 0 bootstraps; nodes 1..N−1 join node 0 on the same machine.
+- On follower machines, every node joins the leader machine's node 0.
+
+### Basic usage
+
+```bash
+# Machine A — 10.0.0.1 — bootstraps the cluster (3 replicas)
+./node.sh --my-ip 10.0.0.1 --leader --reps-per-machine 3
+
+# Machine B — 10.0.0.2 — joins the cluster
+./node.sh --my-ip 10.0.0.2 --leader-ip 10.0.0.1 --reps-per-machine 3
+
+# Machine C — 10.0.0.3 — joins the cluster
+./node.sh --my-ip 10.0.0.3 --leader-ip 10.0.0.1 --reps-per-machine 3
+```
+
+Start the **leader machine first** and wait for it to be ready before starting followers.
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--my-ip IP` | *required* | This machine's externally reachable IP address |
+| `--leader` | — | This machine bootstraps the Raft cluster (mutually exclusive with `--leader-ip`) |
+| `--leader-ip IP` | — | IP of the leader machine to join (mutually exclusive with `--leader`) |
+| `--leader-port P` | `BASE_PORT+1` | Raft port of the leader's node 0 |
+| `--reps-per-machine N` | `1` | Number of rqlite nodes to start on this machine |
+| `--base-port P` | `4001` | Starting HTTP port for node 0 on this machine |
+
+### Other subcommands
+
+```bash
+./node.sh stop                                           # stop all nodes on this machine
+./node.sh status                                         # show container state on this machine
+./node.sh urls --my-ip 10.0.0.1 --reps-per-machine 3    # URLs for this machine only
+./node.sh urls --all-ips 10.0.0.1,10.0.0.2,10.0.0.3 \
+               --reps-per-machine 3                      # combined URL list for all machines
+```
+
+The `urls` subcommand also prints the correct `--replication-factor` to use with `run_tests.py`:
+
+```
+10.0.0.1:4001,...,10.0.0.3:4021
+
+  Reminder: --replication-factor for run_tests.py should be
+    machines (3) × reps-per-machine (3) = 9
+```
+
+### Running tests after the cluster is up
+
+```bash
+# Get the combined URL string from any machine:
+URLS=$(./node.sh urls --all-ips 10.0.0.1,10.0.0.2,10.0.0.3 --reps-per-machine 3)
+
+# replication-factor = machines × reps-per-machine
+python3 run_tests.py fuzz \
+    --urls "$URLS" \
+    --replication-factor 9 \
+    --threads 8 --num-ops 5000
 ```
 
 ---
@@ -246,7 +323,8 @@ The `--workload` flag accepts:
 ```
 final_project/
 ├── build.sh                          # One-shot build script
-├── cluster.sh                        # Start / stop a local Podman cluster
+├── cluster.sh                        # Start / stop a single-machine Podman cluster
+├── node.sh                           # Start replicas on this machine as part of a multi-machine cluster
 ├── run_tests.py                      # Python test runner
 ├── rqlite-binding/                   # YCSB binding (Maven project)
 │   ├── pom.xml

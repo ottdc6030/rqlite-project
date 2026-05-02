@@ -8,22 +8,22 @@
 # machine in the cluster can reach each node at MY_IP:PORT.
 #
 # Usage:
-#   ./node.sh --my-ip IP --leader     [--replicas N] [--base-port P]
-#   ./node.sh --my-ip IP --leader-ip IP [--leader-port P] [--replicas N] [--base-port P]
+#   ./node.sh --my-ip IP --leader     [--reps-per-machine N] [--base-port P]
+#   ./node.sh --my-ip IP --leader-ip IP [--leader-port P] [--reps-per-machine N] [--base-port P]
 #   ./node.sh stop
 #   ./node.sh status
-#   ./node.sh urls  [--my-ip IP]  [--replicas N] [--base-port P]
-#   ./node.sh urls  --all-ips IP,IP,...           [--replicas N] [--base-port P]
+#   ./node.sh urls  [--my-ip IP]  [--reps-per-machine N] [--base-port P]
+#   ./node.sh urls  --all-ips IP,IP,...           [--reps-per-machine N] [--base-port P]
 #
 # Flags:
 #   --my-ip IP        This machine's externally reachable IP address (required to start)
 #   --leader          This machine bootstraps the cluster (node 0 becomes the Raft leader)
 #   --leader-ip IP    IP of the leader machine; nodes on this machine join that cluster
 #   --leader-port P   Raft port of the leader's node 0 (default: BASE_PORT + 1 = 4002)
-#   --replicas N      Number of rqlite nodes to start on this machine (default: 1)
-#   --base-port P     Starting HTTP port for node 0 on this machine (default: 4001)
-#   --all-ips IP,...  Used with the 'urls' subcommand to print a combined URL list
-#                     for every machine (one IP per machine, replicas ports each)
+#   --reps-per-machine N  Number of rqlite nodes to start on this machine (default: 1)
+#   --base-port P        Starting HTTP port for node 0 on this machine (default: 4001)
+#   --all-ips IP,...     Used with the 'urls' subcommand to print a combined URL list
+#                        for every machine (one IP per machine, reps-per-machine ports each)
 #
 # Port scheme (per node i on this machine):
 #   HTTP  BASE_PORT + i * 10
@@ -37,23 +37,23 @@
 # Typical 3-machine setup (3 replicas each = 9-node cluster):
 #
 #   Machine A — 10.0.0.1 (leader):
-#     ./node.sh --my-ip 10.0.0.1 --leader --replicas 3
+#     ./node.sh --my-ip 10.0.0.1 --leader --reps-per-machine 3
 #
 #   Machine B — 10.0.0.2:
-#     ./node.sh --my-ip 10.0.0.2 --leader-ip 10.0.0.1 --replicas 3
+#     ./node.sh --my-ip 10.0.0.2 --leader-ip 10.0.0.1 --reps-per-machine 3
 #
 #   Machine C — 10.0.0.3:
-#     ./node.sh --my-ip 10.0.0.3 --leader-ip 10.0.0.1 --replicas 3
+#     ./node.sh --my-ip 10.0.0.3 --leader-ip 10.0.0.1 --reps-per-machine 3
 #
 #   Print combined --urls for all 9 nodes (run on any machine):
-#     ./node.sh urls --all-ips 10.0.0.1,10.0.0.2,10.0.0.3 --replicas 3
+#     ./node.sh urls --all-ips 10.0.0.1,10.0.0.2,10.0.0.3 --reps-per-machine 3
 #
-#   Then run tests (replication-factor = replicas per machine = 3):
+#   Then run tests (replication-factor = machines × reps-per-machine = 3 × 3 = 9):
 #     python3 run_tests.py fuzz \
 #         --urls 10.0.0.1:4001,10.0.0.1:4011,10.0.0.1:4021,\
 #                10.0.0.2:4001,10.0.0.2:4011,10.0.0.2:4021,\
 #                10.0.0.3:4001,10.0.0.3:4011,10.0.0.3:4021 \
-#         --replication-factor 3 --threads 8
+#         --replication-factor 9 --threads 8
 
 set -euo pipefail
 
@@ -95,7 +95,7 @@ while [[ $# -gt 0 ]]; do
         --leader)       IS_LEADER=true;   shift   ;;
         --leader-ip)    LEADER_IP="$2";   shift 2 ;;
         --leader-port)  LEADER_PORT="$2"; shift 2 ;;
-        --replicas)     REPLICAS="$2";    shift 2 ;;
+        --reps-per-machine) REPLICAS="$2"; shift 2 ;;
         --base-port)    BASE_PORT="$2";   shift 2 ;;
         --all-ips)      ALL_IPS="$2";     shift 2 ;;
         -h|--help)
@@ -202,6 +202,12 @@ print_urls() {
         done
     done
     echo "$urls"
+
+    local num_machines=${#ip_list[@]}
+    local total_rf=$(( num_machines * REPLICAS ))
+    echo "" >&2
+    echo "  Reminder: --replication-factor for run_tests.py should be" >&2
+    echo "    machines (${num_machines}) × reps-per-machine (${REPLICAS}) = ${total_rf}" >&2
 }
 
 # ── start ─────────────────────────────────────────────────────────────────────
@@ -228,7 +234,7 @@ start_nodes() {
         mode="follower machine — all nodes join ${LEADER_IP}:${LEADER_PORT}"
     fi
 
-    echo "Starting ${REPLICAS} rqlite replica(s) on ${MY_IP}  (${mode})"
+    echo "Starting ${REPLICAS} rqlite replica(s) per machine on ${MY_IP}  (${mode})"
     echo "  Base HTTP port: ${BASE_PORT},  port step: ${PORT_STEP}"
     echo ""
 
@@ -297,7 +303,7 @@ start_nodes() {
     local machine_urls; machine_urls="$(print_urls)"
 
     echo ""
-    echo "All ${REPLICAS} replica(s) running on ${MY_IP}."
+    echo "All ${REPLICAS} replica(s) per machine running on ${MY_IP}."
     echo ""
     echo "  Node addresses (this machine):"
     for i in $(seq 0 $(( REPLICAS - 1 ))); do
@@ -311,7 +317,7 @@ start_nodes() {
     echo "    $machine_urls"
     echo ""
     echo "  To print combined --urls once all machines are up:"
-    echo "    ./node.sh urls --all-ips ${MY_IP},MACHINE2_IP,... --replicas ${REPLICAS}"
+    echo "    ./node.sh urls --all-ips ${MY_IP},MACHINE2_IP,... --reps-per-machine ${REPLICAS}"
     echo ""
     echo "  To stop this machine's nodes:"
     echo "    ./node.sh stop"
