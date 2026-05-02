@@ -4,17 +4,29 @@ rqlite test runner — fuzz or YCSB benchmark.
 
 Usage:
   python3 run_tests.py fuzz --urls HOST:PORT[,...] [options]
+  python3 run_tests.py fuzz --ips IP[,...] --ports PORT[,...] [options]
   python3 run_tests.py ycsb --urls HOST:PORT[,...] --workload FILE [options]
+  python3 run_tests.py ycsb --ips IP[,...] --ports PORT[,...] --workload FILE [options]
 
-IP addresses and ports are accepted as HOST:PORT; http:// is prepended
-automatically.  All options without a default listed below have their
-defaults controlled by the underlying Java tool, not by this script.
+Node addresses can be supplied in two ways:
+  --urls  HOST:PORT,...   explicit full list (http:// prepended automatically)
+  --ips + --ports        each IP is one cluster; every port listed is added as
+                         a node for that cluster, yielding IP:PORT for every
+                         (IP, PORT) combination in order.
+
+All options without a default listed below have their defaults controlled by
+the underlying Java tool, not by this script.
 
 Examples:
-  # Consistency fuzzer: 6 nodes, replication-factor 3, 8 threads
+  # Consistency fuzzer: 6 nodes via --urls, replication-factor 3, 8 threads
   python3 run_tests.py fuzz \\
       --urls 10.0.0.1:4001,10.0.0.2:4001,10.0.0.3:4001,\\
              10.0.0.4:4001,10.0.0.5:4001,10.0.0.6:4001 \\
+      --replication-factor 3 --threads 8 --num-ops 5000
+
+  # Same 6 nodes expressed with --ips / --ports (2 clusters × 3 ports each)
+  python3 run_tests.py fuzz \\
+      --ips 10.0.0.1,10.0.0.2 --ports 4001,4002,4003 \\
       --replication-factor 3 --threads 8 --num-ops 5000
 
   # YCSB workload A: 3 nodes, replication-factor 3, 8 threads
@@ -46,6 +58,29 @@ def format_urls(raw: str) -> str:
         else:
             result.append("http://" + part)
     return ",".join(result)
+
+
+def urls_from_ips_ports(raw_ips: str, raw_ports: str) -> str:
+    """Build a comma-separated HOST:PORT list from --ips and --ports.
+
+    Each IP represents one cluster.  Every port is added as a node for
+    every IP, preserving the order: all ports for IP[0], then all ports
+    for IP[1], etc.  The result is then passed through format_urls so
+    http:// is prepended consistently.
+
+    Example:
+        ips="10.0.0.1,10.0.0.2", ports="4001,4002"
+        → "http://10.0.0.1:4001,http://10.0.0.1:4002,
+            http://10.0.0.2:4001,http://10.0.0.2:4002"
+    """
+    ips   = [ip.strip() for ip in raw_ips.split(",")   if ip.strip()]
+    ports = [p.strip()  for p  in raw_ports.split(",") if p.strip()]
+    if not ips:
+        raise ValueError("--ips contained no valid addresses.")
+    if not ports:
+        raise ValueError("--ports contained no valid ports.")
+    pairs = [f"{ip}:{port}" for ip in ips for port in ports]
+    return format_urls(",".join(pairs))
 
 # ---------------------------------------------------------------------------
 # Shared property builders
@@ -190,13 +225,31 @@ def build_parser() -> argparse.ArgumentParser:
     # ---- Shared ----
     shared = parser.add_argument_group("shared arguments (fuzz and ycsb)")
 
-    shared.add_argument(
+    url_group = shared.add_mutually_exclusive_group(required=True)
+    url_group.add_argument(
         "--urls",
-        required=True,
         metavar="HOST:PORT[,...]",
         help=(
             "Comma-separated list of rqlite node addresses as HOST:PORT or IP:PORT. "
-            "http:// is prepended automatically."
+            "http:// is prepended automatically. "
+            "Mutually exclusive with --ips/--ports."
+        ),
+    )
+    url_group.add_argument(
+        "--ips",
+        metavar="IP[,...]",
+        help=(
+            "Comma-separated list of IP addresses, one per cluster. "
+            "Must be used together with --ports. "
+            "Mutually exclusive with --urls."
+        ),
+    )
+    shared.add_argument(
+        "--ports",
+        metavar="PORT[,...]",
+        help=(
+            "Comma-separated list of ports. Combined with --ips to produce "
+            "one HOST:PORT entry per (IP, port) pair. Required when --ips is used."
         ),
     )
     shared.add_argument(
@@ -318,7 +371,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    urls = format_urls(args.urls)
+
+    if args.urls is not None:
+        urls = format_urls(args.urls)
+    else:
+        if not args.ports:
+            parser.error("--ports is required when --ips is used.")
+        try:
+            urls = urls_from_ips_ports(args.ips, args.ports)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     if args.mode == "fuzz":
         sys.exit(run_fuzz(args, urls))
