@@ -41,6 +41,10 @@ if [[ ! -d "$YCSB_DIR" ]]; then
     # Register the rqlite binding in YCSB's launcher script
     sed -i 's/"redis".*: "site.ycsb.db.RedisClient",/"redis"        : "site.ycsb.db.RedisClient",\n    "rqlite"       : "site.ycsb.db.RqliteClient",/' "$YCSB_BIN"
     echo "    rqlite registered in $YCSB_BIN"
+    # Register the rqlite binding in bindings.properties (line 28, above accumulo)
+    BINDINGS_FILE="$YCSB_DIR/bin/bindings.properties"
+    sed -i '28s/^/rqlite:site.ycsb.db.RqliteClient\n/' "$BINDINGS_FILE"
+    echo "    rqlite registered in $BINDINGS_FILE"
 fi
 
 # ---------------------------------------------------------------------------

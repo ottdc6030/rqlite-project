@@ -42,7 +42,7 @@ import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 FUZZER_JAR = os.path.join(SCRIPT_DIR, "rqlite-fuzzer", "target", "rqlite-fuzzer.jar")
-YCSB_BIN   = os.path.join(SCRIPT_DIR, "ycsb-0.17.0", "bin", "ycsb")
+YCSB_BIN   = os.path.join(SCRIPT_DIR, "ycsb-0.17.0", "bin", "ycsb.sh")
 
 # ---------------------------------------------------------------------------
 # URL helpers
