@@ -44,24 +44,35 @@ public final class RqliteHttpHelper {
    * <p>On success, {@code results} holds the JSON array from the
    * {@code "results"} key. On failure, {@code errorMessage} is set and
    * {@code results} is null.
+   *
+   * <p>For write responses, {@code sequenceNumber} holds the Raft log index
+   * returned by rqlite in the top-level {@code "sequence_number"} field.
+   * This is the authoritative server-side commit order for the statement.
+   * The value is {@code -1} for read responses and on error.
    */
   public static final class RqliteResult {
     /** Non-null when the HTTP call and top-level JSON parsing succeeded. */
     public final ArrayNode results;
     /** Non-null when anything went wrong (transport, HTTP status, or JSON). */
     public final String errorMessage;
+    /**
+     * Raft log index of the committed write, or {@code -1} if not present
+     * (reads do not carry a sequence number).
+     */
+    public final long sequenceNumber;
 
-    private RqliteResult(ArrayNode results, String errorMessage) {
-      this.results = results;
-      this.errorMessage = errorMessage;
+    private RqliteResult(ArrayNode results, String errorMessage, long sequenceNumber) {
+      this.results        = results;
+      this.errorMessage   = errorMessage;
+      this.sequenceNumber = sequenceNumber;
     }
 
-    public static RqliteResult ok(ArrayNode results) {
-      return new RqliteResult(results, null);
+    public static RqliteResult ok(ArrayNode results, long sequenceNumber) {
+      return new RqliteResult(results, null, sequenceNumber);
     }
 
     public static RqliteResult error(String message) {
-      return new RqliteResult(null, message);
+      return new RqliteResult(null, message, -1L);
     }
 
     public boolean isOk() {
@@ -282,6 +293,14 @@ public final class RqliteHttpHelper {
       return RqliteResult.error("Missing 'results' array in response: " + resp.body());
     }
 
-    return RqliteResult.ok((ArrayNode) resultsNode);
+    // Extract the Raft log index returned by rqlite for write responses.
+    // Read responses do not carry this field, so default to -1.
+    long sequenceNumber = -1L;
+    JsonNode seqNode = root.get("sequence_number");
+    if (seqNode != null && !seqNode.isNull()) {
+      sequenceNumber = seqNode.asLong();
+    }
+
+    return RqliteResult.ok((ArrayNode) resultsNode, sequenceNumber);
   }
 }

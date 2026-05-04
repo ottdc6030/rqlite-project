@@ -191,10 +191,13 @@ public final class FuzzerThread implements Runnable {
     Status status = client.insert(config.table, key, fields);
     long tsResp = clock.getAndIncrement();
     boolean ok = (status == Status.OK);
+    // Capture the Raft log index so the consistency checker can sort writes by
+    // true commit order rather than by the client-side response timestamp.
+    long raftSeq = ok ? client.getLastWriteSequenceNumber() : -1L;
     // On error the write did not commit; record null value so the checker
     // does not treat an uncommitted value as observable.
     return new OperationRecord(tsCall, tsResp, threadId,
-        OperationRecord.OpType.WRITE, key, ok ? value : null, ok);
+        OperationRecord.OpType.WRITE, key, ok ? value : null, ok, null, raftSeq);
   }
 
   private OperationRecord doRead(RqliteClient client, String key, long tsCall) {
@@ -244,9 +247,11 @@ public final class FuzzerThread implements Runnable {
     Status status = client.delete(config.table, key);
     long tsResp = clock.getAndIncrement();
     boolean ok = (status == Status.OK);
+    // Capture the Raft log index for the same reason as doWrite.
+    long raftSeq = ok ? client.getLastWriteSequenceNumber() : -1L;
     // value=null models "key is now absent"
     return new OperationRecord(tsCall, tsResp, threadId,
-        OperationRecord.OpType.DELETE, key, null, ok);
+        OperationRecord.OpType.DELETE, key, null, ok, null, raftSeq);
   }
 
   // -------------------------------------------------------------------------

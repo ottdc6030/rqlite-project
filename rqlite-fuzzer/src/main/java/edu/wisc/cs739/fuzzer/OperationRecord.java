@@ -62,37 +62,57 @@ public final class OperationRecord {
    * An empty map means the scan matched no rows.
    */
   public final Map<String, String> scanResults;
+  /**
+   * Raft log index ({@code sequence_number}) returned by rqlite for this
+   * operation, or {@code -1} if the operation is a read (reads do not carry a
+   * sequence number) or if the server did not include one in the response.
+   *
+   * <p>For WRITE and DELETE operations, this is the authoritative server-side
+   * commit order assigned by the Raft leader. The consistency checker uses this
+   * to sort write events by true commit order rather than by the client-side
+   * response timestamp.
+   */
+  public final long raftSequence;
 
-  /** Constructor for WRITE, READ, DELETE. */
+  /** Constructor for WRITE, READ, DELETE (no raft sequence). */
   public OperationRecord(long tsCall, long tsResp, int threadId, OpType opType,
                           String key, String value, boolean ok) {
-    this(tsCall, tsResp, threadId, opType, key, value, ok, null);
+    this(tsCall, tsResp, threadId, opType, key, value, ok, null, -1L);
   }
 
-  /** Constructor for SCAN (or any op that carries scanResults). */
+  /** Constructor for SCAN (or any op that carries scanResults, no raft sequence). */
   public OperationRecord(long tsCall, long tsResp, int threadId, OpType opType,
                           String key, String value, boolean ok,
                           Map<String, String> scanResults) {
-    this.tsCall      = tsCall;
-    this.tsResp      = tsResp;
-    this.threadId    = threadId;
-    this.opType      = opType;
-    this.key         = key;
-    this.value       = value;
-    this.ok          = ok;
-    this.scanResults = (scanResults == null)
+    this(tsCall, tsResp, threadId, opType, key, value, ok, scanResults, -1L);
+  }
+
+  /** Full constructor including Raft sequence number. */
+  public OperationRecord(long tsCall, long tsResp, int threadId, OpType opType,
+                          String key, String value, boolean ok,
+                          Map<String, String> scanResults, long raftSequence) {
+    this.tsCall       = tsCall;
+    this.tsResp       = tsResp;
+    this.threadId     = threadId;
+    this.opType       = opType;
+    this.key          = key;
+    this.value        = value;
+    this.ok           = ok;
+    this.raftSequence = raftSequence;
+    this.scanResults  = (scanResults == null)
         ? null
         : Collections.unmodifiableMap(scanResults);
   }
 
   @Override
   public String toString() {
+    String seqStr = raftSequence >= 0 ? " raftSeq=" + raftSequence : "";
     if (opType == OpType.SCAN) {
-      return String.format("OperationRecord{t%d %s key=%s ts=[%d,%d] ok=%b results=%s}",
-          threadId, opType, key, tsCall, tsResp, ok,
+      return String.format("OperationRecord{t%d %s key=%s ts=[%d,%d]%s ok=%b results=%s}",
+          threadId, opType, key, tsCall, tsResp, seqStr, ok,
           scanResults == null ? "null" : scanResults.size() + " rows");
     }
-    return String.format("OperationRecord{t%d %s key=%s value=%s ts=[%d,%d] ok=%b}",
-        threadId, opType, key, value, tsCall, tsResp, ok);
+    return String.format("OperationRecord{t%d %s key=%s value=%s ts=[%d,%d]%s ok=%b}",
+        threadId, opType, key, value, tsCall, tsResp, seqStr, ok);
   }
 }

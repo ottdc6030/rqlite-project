@@ -60,15 +60,21 @@ public final class ConsistencyChecker {
     /** Logical timestamp when the response was received. */
     public final long   tsResp;
     /**
+     * Raft log index from the server response, or {@code -1} if not available.
+     * When present, this is the authoritative commit order for this write.
+     */
+    public final long   raftSequence;
+    /**
      * Value written, or {@code null} for DELETE (models the key being absent
      * after this event).
      */
     public final String value;
 
-    WriteEvent(long tsCall, long tsResp, String value) {
-      this.tsCall = tsCall;
-      this.tsResp = tsResp;
-      this.value  = value;
+    WriteEvent(long tsCall, long tsResp, String value, long raftSequence) {
+      this.tsCall        = tsCall;
+      this.tsResp        = tsResp;
+      this.value         = value;
+      this.raftSequence  = raftSequence;
     }
   }
 
@@ -99,9 +105,10 @@ public final class ConsistencyChecker {
 
     @Override
     public String toString() {
+      String seqStr = record.raftSequence >= 0 ? " raftSeq=" + record.raftSequence : "";
       return String.format(
-          "VIOLATION [thread=%d op=%s ts=[%d,%d]] key=%s observed=%s expected=%s (%s)",
-          record.threadId, record.opType, record.tsCall, record.tsResp,
+          "VIOLATION [thread=%d op=%s ts=[%d,%d]%s] key=%s observed=%s expected=%s (%s)",
+          record.threadId, record.opType, record.tsCall, record.tsResp, seqStr,
           key, quote(observedValue), quote(expectedValue), detail);
     }
 
@@ -139,7 +146,8 @@ public final class ConsistencyChecker {
   public static CheckResult check(List<OperationRecord> history) {
 
     // 1. Build per-key write history from all successful WRITE and DELETE ops.
-    //    Each list is sorted by tsResp (ascending) so we can scan linearly.
+    //    Each list is sorted by Raft sequence number when available (authoritative
+    //    server-side commit order), falling back to tsResp when not.
     Map<String, List<WriteEvent>> writesByKey = new HashMap<>();
     for (OperationRecord op : history) {
       if (!op.ok) {
@@ -149,11 +157,20 @@ public final class ConsistencyChecker {
           || op.opType == OperationRecord.OpType.DELETE) {
         writesByKey
             .computeIfAbsent(op.key, k -> new ArrayList<>())
-            .add(new WriteEvent(op.tsCall, op.tsResp, op.value));
+            .add(new WriteEvent(op.tsCall, op.tsResp, op.value, op.raftSequence));
       }
     }
     for (List<WriteEvent> writes : writesByKey.values()) {
-      writes.sort(Comparator.comparingLong(w -> w.tsResp));
+      // Sort by Raft sequence when all entries carry a valid sequence number;
+      // this reflects the true commit order assigned by the Raft leader and
+      // avoids false violations caused by client-side timestamp skew.
+      // Fall back to tsResp when any entry lacks a sequence number.
+      boolean allHaveSeq = writes.stream().allMatch(w -> w.raftSequence >= 0);
+      if (allHaveSeq) {
+        writes.sort(Comparator.comparingLong(w -> w.raftSequence));
+      } else {
+        writes.sort(Comparator.comparingLong(w -> w.tsResp));
+      }
     }
 
     // 2. Check each successful READ and SCAN.

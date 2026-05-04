@@ -154,6 +154,17 @@ public final class RqliteClient extends DB {
   /** Whether to discover and route to the Raft leader. */
   private boolean followLeader;
 
+  /**
+   * Raft log index returned by the most recent successful write on this
+   * client instance. Set by {@link #checkWriteResult} on every successful
+   * INSERT, UPDATE, or DELETE. Value is {@code -1} before any write or
+   * after a failed write.
+   *
+   * <p>This field is per-instance (i.e., per-thread in the fuzzer) and is
+   * not shared across threads.
+   */
+  private long lastWriteSequenceNumber = -1L;
+
   // -------------------------------------------------------------------------
   // Lifecycle
   // -------------------------------------------------------------------------
@@ -656,9 +667,13 @@ public final class RqliteClient extends DB {
    *
    * <p>rqlite returns HTTP 200 even on SQL-level errors; both the transport
    * result and the per-statement {@code "error"} key must be checked.
+   *
+   * <p>On success, updates {@link #lastWriteSequenceNumber} with the Raft log
+   * index from the response so that callers can retrieve the server-assigned
+   * commit order via {@link #getLastWriteSequenceNumber()}.
    */
-  private static Status checkWriteResult(RqliteHttpHelper.RqliteResult rr,
-                                         String opName) {
+  private Status checkWriteResult(RqliteHttpHelper.RqliteResult rr,
+                                   String opName) {
     if (!rr.isOk()) {
       LOG.warning(opName + " error: " + rr.errorMessage);
       return Status.ERROR;
@@ -673,6 +688,20 @@ public final class RqliteClient extends DB {
       LOG.warning(opName + " SQL error: " + err);
       return Status.ERROR;
     }
+    lastWriteSequenceNumber = rr.sequenceNumber;
     return Status.OK;
+  }
+
+  /**
+   * Returns the Raft log index ({@code sequence_number}) from the most recent
+   * successful write issued by this client instance.
+   *
+   * <p>This value is set after every successful INSERT, UPDATE, or DELETE and
+   * reflects the authoritative server-side commit order for that operation.
+   * Returns {@code -1} if no successful write has been performed yet or if
+   * rqlite did not include a sequence number in the last response.
+   */
+  public long getLastWriteSequenceNumber() {
+    return lastWriteSequenceNumber;
   }
 }
