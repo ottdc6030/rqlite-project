@@ -90,18 +90,25 @@ public final class RqliteHttpHelper {
   private final HttpClient http;
   private final ObjectMapper mapper;
   private final Duration requestTimeout;
+  /** Number of times to retry a failed HTTP send before giving up. */
+  private final int maxRetries;
+  /** Milliseconds to wait between retry attempts. */
+  private final long retryDelayMs;
 
   // -------------------------------------------------------------------------
   // Construction
   // -------------------------------------------------------------------------
 
   /**
-   * Create a helper with explicit timeouts.
+   * Create a helper with explicit timeouts and retry configuration.
    *
    * @param connectTimeoutSecs  TCP connect timeout in seconds
    * @param requestTimeoutSecs  full request (send+receive) timeout in seconds
+   * @param maxRetries          number of retry attempts after a transient IO failure
+   * @param retryDelayMs        milliseconds to wait between retries
    */
-  public RqliteHttpHelper(int connectTimeoutSecs, int requestTimeoutSecs) {
+  public RqliteHttpHelper(int connectTimeoutSecs, int requestTimeoutSecs,
+                          int maxRetries, long retryDelayMs) {
     this.http = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(connectTimeoutSecs))
         // Follow redirects so ?redirect on a follower node is handled automatically
@@ -109,6 +116,8 @@ public final class RqliteHttpHelper {
         .build();
     this.mapper = new ObjectMapper();
     this.requestTimeout = Duration.ofSeconds(requestTimeoutSecs);
+    this.maxRetries = maxRetries;
+    this.retryDelayMs = retryDelayMs;
   }
 
   // -------------------------------------------------------------------------
@@ -176,13 +185,36 @@ public final class RqliteHttpHelper {
         .GET()
         .build();
 
-    HttpResponse<String> resp;
-    try {
-      resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-    } catch (IOException | InterruptedException e) {
-      Thread.currentThread().interrupt();
-      LOG.warning("Leader discovery failed for " + baseUrl + ": " + e
-          + (e.getCause() != null ? " caused by: " + e.getCause() : ""));
+    HttpResponse<String> resp = null;
+    IOException lastIoe = null;
+    for (int attempt = 0; attempt <= maxRetries; attempt++) {
+      if (attempt > 0) {
+        try {
+          Thread.sleep(retryDelayMs);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          LOG.warning("Leader discovery interrupted while retrying for " + baseUrl);
+          return null;
+        }
+        LOG.warning("Retrying leader discovery (attempt " + (attempt + 1) + "/"
+            + (maxRetries + 1) + ") for " + baseUrl);
+      }
+      try {
+        resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+        lastIoe = null;
+        break;
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        LOG.warning("Leader discovery interrupted for " + baseUrl + ": " + ie);
+        return null;
+      } catch (IOException e) {
+        lastIoe = e;
+      }
+    }
+    if (lastIoe != null) {
+      LOG.warning("Leader discovery failed for " + baseUrl + " after "
+          + (maxRetries + 1) + " attempt(s): " + lastIoe
+          + (lastIoe.getCause() != null ? " caused by: " + lastIoe.getCause() : ""));
       return null;
     }
 
@@ -275,13 +307,33 @@ public final class RqliteHttpHelper {
         .POST(HttpRequest.BodyPublishers.ofString(body))
         .build();
 
-    HttpResponse<String> resp;
-    try {
-      resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-    } catch (IOException | InterruptedException e) {
-      Thread.currentThread().interrupt();
-      return RqliteResult.error("HTTP request failed: " + e
-          + (e.getCause() != null ? " caused by: " + e.getCause() : ""));
+    HttpResponse<String> resp = null;
+    IOException lastIoe = null;
+    for (int attempt = 0; attempt <= maxRetries; attempt++) {
+      if (attempt > 0) {
+        try {
+          Thread.sleep(retryDelayMs);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          return RqliteResult.error("Interrupted while waiting to retry: " + ie);
+        }
+        LOG.warning("Retrying HTTP POST (attempt " + (attempt + 1) + "/"
+            + (maxRetries + 1) + "): " + url);
+      }
+      try {
+        resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+        lastIoe = null;
+        break;
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        return RqliteResult.error("HTTP request interrupted: " + ie);
+      } catch (IOException e) {
+        lastIoe = e;
+      }
+    }
+    if (lastIoe != null) {
+      return RqliteResult.error("HTTP request failed after " + (maxRetries + 1) + " attempt(s): " + lastIoe
+          + (lastIoe.getCause() != null ? " caused by: " + lastIoe.getCause() : ""));
     }
 
     int status = resp.statusCode();

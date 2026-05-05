@@ -70,6 +70,10 @@ import java.util.stream.Collectors;
  *       <td>TCP connect timeout in seconds</td></tr>
  *   <tr><td>rqlite.request.timeout</td><td>30</td>
  *       <td>Full HTTP request timeout in seconds</td></tr>
+ *   <tr><td>rqlite.retry.max</td><td>3</td>
+ *       <td>Max retry attempts on transient IO failure (0 = no retries)</td></tr>
+ *   <tr><td>rqlite.retry.delay.ms</td><td>200</td>
+ *       <td>Milliseconds to wait between retry attempts</td></tr>
  *   <tr><td>rqlite.insert.replace</td><td>false</td>
  *       <td>Use INSERT OR REPLACE (idempotent loads)</td></tr>
  * </table>
@@ -91,6 +95,8 @@ public final class RqliteClient extends DB {
   static final String PROP_FIELDCOUNT          = "rqlite.fieldcount";
   static final String PROP_CONNECT_TIMEOUT     = "rqlite.connect.timeout";
   static final String PROP_REQUEST_TIMEOUT     = "rqlite.request.timeout";
+  static final String PROP_RETRY_MAX           = "rqlite.retry.max";
+  static final String PROP_RETRY_DELAY_MS      = "rqlite.retry.delay.ms";
   static final String PROP_INSERT_REPLACE      = "rqlite.insert.replace";
 
   private static final String YCSB_KEY_COL  = "YCSB_KEY";
@@ -229,7 +235,9 @@ public final class RqliteClient extends DB {
 
     int connectTimeout = Integer.parseInt(props.getProperty(PROP_CONNECT_TIMEOUT, "10"));
     int requestTimeout = Integer.parseInt(props.getProperty(PROP_REQUEST_TIMEOUT, "30"));
-    helper = new RqliteHttpHelper(connectTimeout, requestTimeout);
+    int retryMax       = Integer.parseInt(props.getProperty(PROP_RETRY_MAX, "20"));
+    long retryDelayMs  = Long.parseLong(props.getProperty(PROP_RETRY_DELAY_MS, "200"));
+    helper = new RqliteHttpHelper(connectTimeout, requestTimeout, retryMax, retryDelayMs);
 
     // -- Resolve field list (once, shared) ----------------------------------
     synchronized (FIELDS_INIT_LOCK) {
