@@ -225,8 +225,14 @@ public final class RqliteHttpHelper {
 
     try {
       JsonNode root = mapper.readTree(resp.body());
-      // /nodes?ver=2 returns an object: { "nodeId": { "api_addr": "...", "leader": true, ... }, ... }
-      for (JsonNode node : root) {
+      // /nodes?ver=2 returns: { "nodes": [ { "api_addr": "...", "leader": true, ... }, ... ] }
+      JsonNode nodesArray = root.get("nodes");
+      if (nodesArray == null || !nodesArray.isArray()) {
+        LOG.warning("Leader discovery: unexpected /nodes response format from " + baseUrl
+            + ": " + resp.body());
+        return null;
+      }
+      for (JsonNode node : nodesArray) {
         JsonNode leaderField = node.get("leader");
         if (leaderField != null && leaderField.asBoolean()) {
           JsonNode apiAddr = node.get("api_addr");

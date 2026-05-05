@@ -36,9 +36,12 @@ Examples:
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
+import time
+import urllib.request
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 FUZZER_JAR = os.path.join(SCRIPT_DIR, "rqlite-fuzzer", "target", "rqlite-fuzzer.jar")
@@ -81,6 +84,85 @@ def urls_from_ips_ports(raw_ips: str, raw_ports: str) -> str:
         raise ValueError("--ports contained no valid ports.")
     pairs = [f"{ip}:{port}" for ip in ips for port in ports]
     return format_urls(",".join(pairs))
+
+# ---------------------------------------------------------------------------
+# Cluster readiness check
+# ---------------------------------------------------------------------------
+
+def wait_for_cluster_ready(node_urls: list, timeout_secs: int, poll_interval: float = 2.0) -> bool:
+    """Block until every node in *node_urls* agrees on the same Raft leader.
+
+    Polls ``GET /nodes?ver=2`` on each node in turn.  Returns ``True`` as
+    soon as all nodes respond *and* report the same ``api_addr`` for the
+    node marked ``leader: true``.  Returns ``False`` if *timeout_secs*
+    elapses before consensus is reached.
+
+    A node is considered "not ready" when it:
+    * is unreachable (connection error / timeout), or
+    * responds but shows no ``leader: true`` entry, or
+    * disagrees with the other nodes about who the leader is.
+    """
+    deadline = time.monotonic() + timeout_secs
+    attempt  = 0
+
+    print(f"Waiting up to {timeout_secs}s for cluster to elect a leader "
+          f"({len(node_urls)} node(s))...")
+    sys.stdout.flush()
+
+    while True:
+        attempt += 1
+        leaders_seen: set = set()
+        ready = True
+        not_ready_reason = ""
+
+        for url in node_urls:
+            try:
+                req = urllib.request.Request(
+                    url + "/nodes?ver=2",
+                    headers={"Accept": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read().decode())
+
+                # /nodes?ver=2 returns {"nodes": [{"api_addr": ..., "leader": true, ...}, ...]}
+                nodes_list = data.get("nodes", [])
+                leader_addr = None
+                for node in nodes_list:
+                    if node.get("leader"):
+                        leader_addr = node.get("api_addr")
+                        break
+
+                if leader_addr is None:
+                    ready = False
+                    not_ready_reason = f"{url} sees no leader yet"
+                    break
+                leaders_seen.add(leader_addr)
+
+            except Exception as exc:
+                ready = False
+                not_ready_reason = f"{url} unreachable ({exc})"
+                break
+
+        if ready and len(leaders_seen) == 1:
+            print(f"  Cluster ready after {attempt} poll(s): "
+                  f"all nodes agree leader is {next(iter(leaders_seen))}")
+            sys.stdout.flush()
+            return True
+
+        if len(leaders_seen) > 1:
+            ready = False
+            not_ready_reason = f"nodes disagree on leader: {leaders_seen}"
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            print(f"  Timed out after {attempt} poll(s). Last issue: {not_ready_reason}",
+                  file=sys.stderr)
+            return False
+
+        wait = min(poll_interval, remaining)
+        print(f"  [{attempt}] Not ready ({not_ready_reason}), retrying in {wait:.1f}s...")
+        sys.stdout.flush()
+        time.sleep(wait)
 
 # ---------------------------------------------------------------------------
 # Shared property builders
@@ -294,6 +376,15 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECS",
         help="HTTP connect timeout in seconds.",
     )
+    shared.add_argument(
+        "--leader-wait-timeout",
+        type=int,
+        dest="leader_wait_timeout",
+        metavar="SECS",
+        default=60,
+        help="Seconds to wait for all cluster nodes to agree on a leader before "
+             "starting the test (default: 60). Set to 0 to disable.",
+    )
 
     # ---- Fuzz-only ----
     fuzz = parser.add_argument_group("fuzz-only arguments")
@@ -381,6 +472,13 @@ def main() -> None:
             urls = urls_from_ips_ports(args.ips, args.ports)
         except ValueError as exc:
             parser.error(str(exc))
+
+    node_urls = [u.strip() for u in urls.split(",") if u.strip()]
+
+    if args.leader_wait_timeout > 0:
+        if not wait_for_cluster_ready(node_urls, args.leader_wait_timeout):
+            sys.exit(1)
+        print()
 
     if args.mode == "fuzz":
         sys.exit(run_fuzz(args, urls))
