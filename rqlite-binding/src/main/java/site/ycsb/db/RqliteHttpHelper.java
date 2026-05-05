@@ -181,7 +181,8 @@ public final class RqliteHttpHelper {
       resp = http.send(req, HttpResponse.BodyHandlers.ofString());
     } catch (IOException | InterruptedException e) {
       Thread.currentThread().interrupt();
-      LOG.warning("Leader discovery failed for " + baseUrl + ": " + e.getMessage());
+      LOG.warning("Leader discovery failed for " + baseUrl + ": " + e
+          + (e.getCause() != null ? " caused by: " + e.getCause() : ""));
       return null;
     }
 
@@ -263,7 +264,8 @@ public final class RqliteHttpHelper {
       }
       body = mapper.writeValueAsString(outer);
     } catch (IOException e) {
-      return RqliteResult.error("Failed to serialize request body: " + e.getMessage());
+      return RqliteResult.error("Failed to serialize request body: " + e
+          + (e.getCause() != null ? " caused by: " + e.getCause() : ""));
     }
 
     HttpRequest req = HttpRequest.newBuilder()
@@ -278,7 +280,8 @@ public final class RqliteHttpHelper {
       resp = http.send(req, HttpResponse.BodyHandlers.ofString());
     } catch (IOException | InterruptedException e) {
       Thread.currentThread().interrupt();
-      return RqliteResult.error("HTTP request failed: " + e.getMessage());
+      return RqliteResult.error("HTTP request failed: " + e
+          + (e.getCause() != null ? " caused by: " + e.getCause() : ""));
     }
 
     int status = resp.statusCode();
