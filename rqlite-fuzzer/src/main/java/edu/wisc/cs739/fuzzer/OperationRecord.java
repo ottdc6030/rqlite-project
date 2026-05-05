@@ -63,14 +63,18 @@ public final class OperationRecord {
    */
   public final Map<String, String> scanResults;
   /**
-   * Raft log index ({@code sequence_number}) returned by rqlite for this
-   * operation, or {@code -1} if the operation is a read (reads do not carry a
-   * sequence number) or if the server did not include one in the response.
+   * Raft log index ({@code raft_index}) returned by rqlite for this operation,
+   * or {@code -1} if the server did not include one in the response.
    *
-   * <p>For WRITE and DELETE operations, this is the authoritative server-side
-   * commit order assigned by the Raft leader. The consistency checker uses this
-   * to sort write events by true commit order rather than by the client-side
-   * response timestamp.
+   * <p>For WRITE and DELETE operations this is the index of the committed Raft
+   * log entry. For READ and SCAN operations with {@code level=strong} or
+   * {@code level=linearizable} it is the index at which the read was served.
+   * Both are drawn from the same global log sequence and are directly
+   * comparable, providing an objective total order over all operations.
+   *
+   * <p>When all operations in a run have a valid (non-negative) raft_index the
+   * consistency checker uses it for an exact snapshot check instead of the
+   * time-window heuristic.
    */
   public final long raftSequence;
 

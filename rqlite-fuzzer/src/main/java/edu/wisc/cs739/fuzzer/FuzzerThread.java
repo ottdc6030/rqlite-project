@@ -193,7 +193,7 @@ public final class FuzzerThread implements Runnable {
     boolean ok = (status == Status.OK);
     // Capture the Raft log index so the consistency checker can sort writes by
     // true commit order rather than by the client-side response timestamp.
-    long raftSeq = ok ? client.getLastWriteSequenceNumber() : -1L;
+    long raftSeq = ok ? client.getLastRaftIndex() : -1L;
     // On error the write did not commit; record null value so the checker
     // does not treat an uncommitted value as observable.
     return new OperationRecord(tsCall, tsResp, threadId,
@@ -207,13 +207,16 @@ public final class FuzzerThread implements Runnable {
 
     // NOT_FOUND is a valid outcome (null value), not an error.
     boolean ok = (status == Status.OK || status == Status.NOT_FOUND);
+    // Capture the Raft index at which this read was served so the consistency
+    // checker can use it for an exact snapshot check.
+    long raftSeq = ok ? client.getLastRaftIndex() : -1L;
     String value = null;
     if (status == Status.OK) {
       ByteIterator bi = result.get("value");
       value = (bi != null) ? bi.toString() : null;
     }
     return new OperationRecord(tsCall, tsResp, threadId,
-        OperationRecord.OpType.READ, key, value, ok);
+        OperationRecord.OpType.READ, key, value, ok, null, raftSeq);
   }
 
   private OperationRecord doScan(RqliteClient client, String key,
@@ -230,6 +233,8 @@ public final class FuzzerThread implements Runnable {
       return new OperationRecord(tsCall, tsResp, threadId,
           OperationRecord.OpType.SCAN, key, null, false, null);
     }
+    // Capture the Raft index at which this scan was served.
+    long raftSeq = client.getLastRaftIndex();
 
     // Extract key → "value" field from each row
     Map<String, String> scanResults = new LinkedHashMap<>();
@@ -240,7 +245,7 @@ public final class FuzzerThread implements Runnable {
       scanResults.put(entry.getKey(), val);
     }
     return new OperationRecord(tsCall, tsResp, threadId,
-        OperationRecord.OpType.SCAN, key, null, true, scanResults);
+        OperationRecord.OpType.SCAN, key, null, true, scanResults, raftSeq);
   }
 
   private OperationRecord doDelete(RqliteClient client, String key, long tsCall) {
@@ -248,7 +253,7 @@ public final class FuzzerThread implements Runnable {
     long tsResp = clock.getAndIncrement();
     boolean ok = (status == Status.OK);
     // Capture the Raft log index for the same reason as doWrite.
-    long raftSeq = ok ? client.getLastWriteSequenceNumber() : -1L;
+    long raftSeq = ok ? client.getLastRaftIndex() : -1L;
     // value=null models "key is now absent"
     return new OperationRecord(tsCall, tsResp, threadId,
         OperationRecord.OpType.DELETE, key, null, ok, null, raftSeq);

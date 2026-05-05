@@ -45,10 +45,13 @@ public final class RqliteHttpHelper {
    * {@code "results"} key. On failure, {@code errorMessage} is set and
    * {@code results} is null.
    *
-   * <p>For write responses, {@code sequenceNumber} holds the Raft log index
-   * returned by rqlite in the top-level {@code "sequence_number"} field.
-   * This is the authoritative server-side commit order for the statement.
-   * The value is {@code -1} for read responses and on error.
+   * <p>{@code raftIndex} holds the Raft log index returned by rqlite in the
+   * top-level {@code "raft_index"} field (present when {@code ?raft_index} is
+   * appended to the request URL). For write operations this is the index of the
+   * committed entry; for read operations with {@code level=strong} or
+   * {@code level=linearizable} it is the index at which the read was served —
+   * both are comparable and form a global total order over all operations.
+   * The value is {@code -1} on error or when the field is absent.
    */
   public static final class RqliteResult {
     /** Non-null when the HTTP call and top-level JSON parsing succeeded. */
@@ -56,19 +59,19 @@ public final class RqliteHttpHelper {
     /** Non-null when anything went wrong (transport, HTTP status, or JSON). */
     public final String errorMessage;
     /**
-     * Raft log index of the committed write, or {@code -1} if not present
-     * (reads do not carry a sequence number).
+     * Raft log index returned by rqlite, or {@code -1} if not present.
+     * Present for both reads (with {@code ?raft_index}) and writes.
      */
-    public final long sequenceNumber;
+    public final long raftIndex;
 
-    private RqliteResult(ArrayNode results, String errorMessage, long sequenceNumber) {
-      this.results        = results;
-      this.errorMessage   = errorMessage;
-      this.sequenceNumber = sequenceNumber;
+    private RqliteResult(ArrayNode results, String errorMessage, long raftIndex) {
+      this.results      = results;
+      this.errorMessage = errorMessage;
+      this.raftIndex    = raftIndex;
     }
 
-    public static RqliteResult ok(ArrayNode results, long sequenceNumber) {
-      return new RqliteResult(results, null, sequenceNumber);
+    public static RqliteResult ok(ArrayNode results, long raftIndex) {
+      return new RqliteResult(results, null, raftIndex);
     }
 
     public static RqliteResult error(String message) {
@@ -127,9 +130,9 @@ public final class RqliteHttpHelper {
   public RqliteResult executeWrite(String baseUrl,
                                    List<Object[]> stmts,
                                    boolean useTransaction) {
-    String url = baseUrl + "/db/execute";
+    String url = baseUrl + "/db/execute?raft_index";
     if (useTransaction) {
-      url += "?transaction";
+      url += "&transaction";
     }
     return post(url, stmts);
   }
@@ -150,7 +153,9 @@ public final class RqliteHttpHelper {
                                    String consistencyLevel) {
     // associative mode returns rows as objects (field→value) rather than
     // parallel arrays — much simpler to parse.
-    String url = baseUrl + "/db/query?associative&level=" + consistencyLevel;
+    // raft_index asks the server to include the Raft log index at which the
+    // read was served, enabling objective cross-operation ordering.
+    String url = baseUrl + "/db/query?associative&level=" + consistencyLevel + "&raft_index";
     return post(url, stmts);
   }
 
@@ -293,14 +298,15 @@ public final class RqliteHttpHelper {
       return RqliteResult.error("Missing 'results' array in response: " + resp.body());
     }
 
-    // Extract the Raft log index returned by rqlite for write responses.
-    // Read responses do not carry this field, so default to -1.
-    long sequenceNumber = -1L;
-    JsonNode seqNode = root.get("sequence_number");
-    if (seqNode != null && !seqNode.isNull()) {
-      sequenceNumber = seqNode.asLong();
+    // Extract the Raft log index returned by rqlite.
+    // Present for writes (commit index) and reads (served-at index) when
+    // ?raft_index is included in the request URL; absent otherwise (-1).
+    long raftIndex = -1L;
+    JsonNode raftNode = root.get("raft_index");
+    if (raftNode != null && !raftNode.isNull()) {
+      raftIndex = raftNode.asLong();
     }
 
-    return RqliteResult.ok((ArrayNode) resultsNode, sequenceNumber);
+    return RqliteResult.ok((ArrayNode) resultsNode, raftIndex);
   }
 }

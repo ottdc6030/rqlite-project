@@ -185,6 +185,7 @@ public final class ConsistencyChecker {
       if (op.opType == OperationRecord.OpType.READ) {
         totalChecks++;
         Violation v = checkRead(op, op.key, op.value, op.tsCall, op.tsResp,
+            op.raftSequence,
             writesByKey.getOrDefault(op.key, Collections.emptyList()));
         if (v != null) {
           violations.add(v);
@@ -215,6 +216,7 @@ public final class ConsistencyChecker {
           totalChecks++;
           Violation v = checkRead(op, entry.getKey(), entry.getValue(),
               op.tsCall, op.tsResp,
+              op.raftSequence,
               writesByKey.getOrDefault(entry.getKey(), Collections.emptyList()));
           if (v != null) {
             violations.add(v);
@@ -234,19 +236,58 @@ public final class ConsistencyChecker {
    * Check whether a single read of {@code key} returning {@code observedValue}
    * is linearizable with respect to the known write history.
    *
+   * <p>When {@code readRaftSeq} is non-negative and all writes for this key also
+   * carry a Raft index, an exact snapshot check is performed: the read was
+   * served from the state at log index {@code readRaftSeq}, so the expected
+   * value is the one written by the most recent write with
+   * {@code raftSequence <= readRaftSeq}. This is strictly stronger than the
+   * time-window fallback and eliminates false violations caused by
+   * client-side clock skew.
+   *
+   * <p>When no Raft index is available the checker falls back to the
+   * interval-based test: a read is valid if the observed value matches the
+   * last-completed write before the read started, or any concurrent write.
+   *
    * @param sourceOp     the operation record that produced this read (used for
    *                     violation attribution; may be a SCAN record)
    * @param key          the specific key being checked
    * @param observedValue value returned ({@code null} = NOT_FOUND)
    * @param tsCall       logical call timestamp of the read
    * @param tsResp       logical response timestamp of the read
-   * @param sortedWrites write events for this key, sorted by {@code tsResp} ascending
+   * @param readRaftSeq  Raft log index at which this read was served, or
+   *                     {@code -1} if unavailable
+   * @param sortedWrites write events for this key, sorted by commit order
    * @return {@code null} if the read is valid, otherwise a {@link Violation}
    */
   private static Violation checkRead(OperationRecord sourceOp,
                                       String key, String observedValue,
                                       long tsCall, long tsResp,
+                                      long readRaftSeq,
                                       List<WriteEvent> sortedWrites) {
+
+    // --- Exact snapshot check (preferred when all raft indices are available) ---
+    boolean allWritesHaveSeq = sortedWrites.stream().allMatch(w -> w.raftSequence >= 0);
+    if (readRaftSeq >= 0 && allWritesHaveSeq) {
+      // The read was served from the state at log index readRaftSeq.
+      // Writes are sorted by raftSequence ascending (guaranteed by the pre-sort
+      // in check()), so we scan forward and keep the last write at or before
+      // readRaftSeq — that write's value is what the read must observe.
+      String expectedAtSnapshot = null;
+      for (WriteEvent w : sortedWrites) {
+        if (w.raftSequence <= readRaftSeq) {
+          expectedAtSnapshot = w.value;
+        }
+      }
+      if (Objects.equals(observedValue, expectedAtSnapshot)) {
+        return null;
+      }
+      return new Violation(sourceOp, key, observedValue, expectedAtSnapshot,
+          String.format("raft-index snapshot: read served at index %d, "
+              + "expected value of latest write with index <= %d",
+              readRaftSeq, readRaftSeq));
+    }
+
+    // --- Fallback: time-window based check ---
 
     // Find the most recent write that fully completed before this read started.
     // "Fully completed" means the write's response was received before the read

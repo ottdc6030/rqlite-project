@@ -155,15 +155,16 @@ public final class RqliteClient extends DB {
   private boolean followLeader;
 
   /**
-   * Raft log index returned by the most recent successful write on this
-   * client instance. Set by {@link #checkWriteResult} on every successful
-   * INSERT, UPDATE, or DELETE. Value is {@code -1} before any write or
-   * after a failed write.
+   * Raft log index returned by the most recent successful operation on this
+   * client instance. Updated by both write operations (via
+   * {@link #checkWriteResult}) and read operations (via {@link #read} and
+   * {@link #scanToMap}). Value is {@code -1} before any operation or after
+   * a failed one.
    *
    * <p>This field is per-instance (i.e., per-thread in the fuzzer) and is
    * not shared across threads.
    */
-  private long lastWriteSequenceNumber = -1L;
+  private long lastRaftIndex = -1L;
 
   // -------------------------------------------------------------------------
   // Lifecycle
@@ -350,6 +351,9 @@ public final class RqliteClient extends DB {
       LOG.warning("read error: " + rr.errorMessage);
       return Status.ERROR;
     }
+    // Capture the Raft index at which this read was served so callers can
+    // retrieve it via getLastRaftIndex().
+    lastRaftIndex = rr.raftIndex;
 
     JsonNode first = rr.results.get(0);
     String err = RqliteHttpHelper.getResultError(first);
@@ -552,6 +556,8 @@ public final class RqliteClient extends DB {
       LOG.warning("scanToMap error: " + rr.errorMessage);
       return null;
     }
+    // Capture the Raft index at which this scan was served.
+    lastRaftIndex = rr.raftIndex;
 
     JsonNode first = rr.results.get(0);
     String err = RqliteHttpHelper.getResultError(first);
@@ -668,9 +674,9 @@ public final class RqliteClient extends DB {
    * <p>rqlite returns HTTP 200 even on SQL-level errors; both the transport
    * result and the per-statement {@code "error"} key must be checked.
    *
-   * <p>On success, updates {@link #lastWriteSequenceNumber} with the Raft log
+   * <p>On success, updates {@link #lastRaftIndex} with the Raft log
    * index from the response so that callers can retrieve the server-assigned
-   * commit order via {@link #getLastWriteSequenceNumber()}.
+   * commit order via {@link #getLastRaftIndex()}.
    */
   private Status checkWriteResult(RqliteHttpHelper.RqliteResult rr,
                                    String opName) {
@@ -688,20 +694,24 @@ public final class RqliteClient extends DB {
       LOG.warning(opName + " SQL error: " + err);
       return Status.ERROR;
     }
-    lastWriteSequenceNumber = rr.sequenceNumber;
+    lastRaftIndex = rr.raftIndex;
     return Status.OK;
   }
 
   /**
-   * Returns the Raft log index ({@code sequence_number}) from the most recent
-   * successful write issued by this client instance.
+   * Returns the Raft log index ({@code raft_index}) from the most recent
+   * successful operation issued by this client instance.
    *
-   * <p>This value is set after every successful INSERT, UPDATE, or DELETE and
-   * reflects the authoritative server-side commit order for that operation.
-   * Returns {@code -1} if no successful write has been performed yet or if
-   * rqlite did not include a sequence number in the last response.
+   * <p>For writes (INSERT, UPDATE, DELETE) this is the index of the committed
+   * Raft log entry. For reads (SELECT) with {@code level=strong} or
+   * {@code level=linearizable} it is the index at which the read was served.
+   * Both values are drawn from the same global Raft log sequence and are
+   * directly comparable, providing an objective total order over all operations.
+   *
+   * <p>Returns {@code -1} if no successful operation has been performed yet or
+   * if rqlite did not include a raft_index in the last response.
    */
-  public long getLastWriteSequenceNumber() {
-    return lastWriteSequenceNumber;
+  public long getLastRaftIndex() {
+    return lastRaftIndex;
   }
 }
