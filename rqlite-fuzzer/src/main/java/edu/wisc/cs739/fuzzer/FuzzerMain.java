@@ -111,8 +111,10 @@ public final class FuzzerMain {
       System.out.println("Result: FAILED — " + result.violations.size()
           + " violation(s) detected:");
       System.out.println();
+      int i = 0;
       for (ConsistencyChecker.Violation v : result.violations) {
         System.out.println("  " + v);
+        if (++i == 20) break;
       }
       if (result.violations.size() >= 20) {
         System.out.println("  (output capped at 20 violations)");

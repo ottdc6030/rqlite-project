@@ -47,7 +47,7 @@ import java.util.Objects;
 public final class ConsistencyChecker {
 
   /** Maximum number of violations reported before the checker stops early. */
-  private static final int MAX_VIOLATIONS = 20;
+  //private static final int MAX_VIOLATIONS = 20;
 
   // -------------------------------------------------------------------------
   // Public result types
@@ -178,7 +178,7 @@ public final class ConsistencyChecker {
     int totalChecks = 0;
 
     for (OperationRecord op : history) {
-      if (!op.ok || violations.size() >= MAX_VIOLATIONS) {
+      if (!op.ok) { //|| violations.size() >= MAX_VIOLATIONS) {
         continue;
       }
 
@@ -210,9 +210,9 @@ public final class ConsistencyChecker {
 
         // Per-key linearizability check for each returned row.
         for (Map.Entry<String, String> entry : op.scanResults.entrySet()) {
-          if (violations.size() >= MAX_VIOLATIONS) {
-            break;
-          }
+          //if (violations.size() >= MAX_VIOLATIONS) {
+            //break;
+          //}
           totalChecks++;
           Violation v = checkRead(op, entry.getKey(), entry.getValue(),
               op.tsCall, op.tsResp,
